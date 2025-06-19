@@ -1,0 +1,3 @@
+[env]
+LIBTORCH = "/home/jvne/Applications/libtorch"
+LD_LIBRARY_PATH = "/home/jvne/Applications/libtorch/lib"
