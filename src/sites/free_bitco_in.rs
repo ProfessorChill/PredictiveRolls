@@ -217,8 +217,8 @@ impl Site for FreeBitcoIn {
         let login_post = LoginRequest {
             csrf_token: "".to_string(),
             op: "login_new".to_string(),
-            btc_address: "codezmusic@gmail.com".to_string(),
-            password: "iXEUKOVEu8UQNarZ".to_string(),
+            btc_address: "".to_string(),
+            password: "".to_string(),
             tfa_code: "".to_string(),
         };
 

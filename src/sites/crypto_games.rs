@@ -175,7 +175,7 @@ impl Default for CryptoGames {
                     .with_initial_bet(currency.get_min_bet()),
             ),
             client: reqwest::Client::new(),
-            key: "XoFH8KEiXPAnl98KOzsBrljHZXkdHS0WLBxDSQuHL9b3C3k2dp".to_string(),
+            key: "".to_string(),
             history: Vec::new(),
             history_size: 10,
             use_site_balance: true,

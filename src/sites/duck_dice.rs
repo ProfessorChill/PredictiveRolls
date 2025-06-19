@@ -15,7 +15,7 @@ use serde_json::json;
 use crate::sites::{BetError, BetResult, Site};
 use crate::strategies::Strategy;
 
-const API_KEY: &str = "73e34c7c-a058-11ef-b604-3280a0c8331e";
+const API_KEY: &str = "";
 
 #[derive(Debug)]
 pub enum Currency {
