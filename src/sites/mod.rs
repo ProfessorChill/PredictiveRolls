@@ -67,13 +67,13 @@ impl From<duck_dice::BetMakeResponse> for BetResult {
         Self {
             hash_previous_roll: value.bet.previous_hash.clone(),
             hash_next_roll: value.bet.hash.clone(),
-            client_seed: "BeO2jZRd4nidPz4U40e2G7hT22s9GA".to_string(),
+            client_seed: String::new(),
             nonce: value.bet.nonce as u32,
             symbol: value.bet.symbol,
             result: value.bet.result,
-            is_high: value.bet.is_high,
+            is_high: value.bet.choice.chars().next().unwrap_or(' ') == '>',
             number: value.bet.number,
-            threshold: value.bet.threshold,
+            threshold: 0,
             chance: value.bet.chance,
             payout: value.bet.payout,
             bet_amount: value.bet.bet_amount,
@@ -115,4 +115,14 @@ pub trait Site {
     fn get_current_multiplier(&self) -> f32;
     fn get_profit(&self) -> f32;
     fn get_balance(&self) -> f32;
+}
+
+pub trait SiteCurrency {
+    fn get_min_bet(&self) -> f32;
+}
+
+pub enum Sites {
+    DuckDiceIo,
+    CryptoGames,
+    FreeBitcoIn,
 }

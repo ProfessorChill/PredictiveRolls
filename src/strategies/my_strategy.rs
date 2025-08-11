@@ -17,6 +17,8 @@ pub struct MyStrat {
     loss: f32,
     gain: f32,
     win_streak: u32,
+    loss_streak: u32,
+    avg_losses_per_win: Vec<u32>,
 }
 
 impl Default for MyStrat {
@@ -36,6 +38,8 @@ impl Default for MyStrat {
             loss: 0.,
             gain: 0.,
             win_streak: 0,
+            loss_streak: 0,
+            avg_losses_per_win: Vec::new(),
         }
     }
 }
@@ -50,33 +54,51 @@ impl Strategy for MyStrat {
         let mut base_multiplier = 1. / (chance / 100.);
         base_multiplier = base_multiplier.clamp(1.02, 4750.0);
 
-        if self.gain * 0.25 > self.loss / 100. {
-            self.current_bet = self.min_bet + (self.gain * 0.25);
+        /*
+        if self.bank / 1000. > self.min_bet {
+            self.min_bet = self.bank / 1000.;
+        }
+        */
+        let avg_losses = self.avg_losses_per_win.iter().sum::<u32>() as f32
+            / self.avg_losses_per_win.len() as f32;
+        if !avg_losses.is_nan() && self.avg_losses_per_win.len() >= 10 {
+            self.current_bet =
+                (self.min_bet * avg_losses) + (self.loss.max(self.gain) / (base_multiplier - 1.));
         } else {
-            self.current_bet = self.loss / 100.;
+            self.current_bet = self.loss.max(self.gain) / (base_multiplier - 1.);
         }
         self.current_bet = self.current_bet.max(self.min_bet);
+
         self.multiplier = base_multiplier;
 
         (self.current_bet, self.multiplier, self.chance, self.high)
     }
 
     fn on_win(&mut self, bet_result: &BetResult) {
+        self.loss = 0.;
+        self.gain += bet_result.win_amount * 0.25;
         self.profit += bet_result.win_amount;
         self.bank += bet_result.win_amount;
-        self.loss -= bet_result.win_amount;
-        self.gain += bet_result.win_amount;
+        if self.loss_streak > 1 {
+            self.avg_losses_per_win.push(self.loss_streak);
+            if self.avg_losses_per_win.len() > 10 {
+                self.avg_losses_per_win = self.avg_losses_per_win[1..].to_vec();
+            }
+        }
         self.win_streak += 1;
+        self.loss_streak = 0;
 
-        // self.current_bet /= self.multiplier - 1.;
         self.loss = self.loss.max(0.);
     }
 
     fn on_lose(&mut self, bet_result: &BetResult) {
         self.profit -= bet_result.win_amount;
         self.bank -= bet_result.win_amount;
-        self.gain -= bet_result.win_amount * 2.;
+        self.gain -= bet_result.win_amount;
         self.loss += self.current_bet;
+        self.loss_streak += 1;
+        self.win_streak = 0;
+
         self.gain = self.gain.max(0.);
     }
 
@@ -117,5 +139,13 @@ impl Strategy for MyStrat {
 
     fn get_profit(&self) -> f32 {
         self.profit
+    }
+
+    fn reset(&mut self) {
+        self.profit = 0.;
+        self.gain = 0.;
+        self.loss = 0.;
+        self.loss_streak = 0;
+        self.win_streak = 0;
     }
 }

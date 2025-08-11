@@ -121,7 +121,7 @@ pub fn free_bitcoin_fake_bet(
         server_seed_hash_next_roll: server_storage.server_seed_hash_next_roll.clone(),
         client_seed: s_client_seed.clone(),
         nonce_next_roll: nonce + 1,
-        nonce: nonce,
+        nonce,
         server_seed_previous_roll: server_storage.server_seed_previous_roll.to_string(),
         server_seed_hash_previous_roll: server_storage.server_seed_hash_previous_roll.clone(),
         previous_nonce: server_storage.previous_nonce,

@@ -7,67 +7,57 @@ use crate::{
 use burn::{
     data::dataloader::DataLoaderBuilder,
     lr_scheduler::noam::NoamLrSchedulerConfig,
-    nn::loss::{
-        BinaryCrossEntropyLossConfig, CrossEntropyLossConfig, HuberLossConfig, MseLoss,
-        PoissonNllLossConfig, Reduction,
-    },
+    nn::loss::CrossEntropyLossConfig,
     optim::AdamConfig,
     prelude::*,
     record::CompactRecorder,
     tensor::backend::AutodiffBackend,
     train::{
-        metric::{AccuracyMetric, HammingScore, LearningRateMetric, LossMetric},
+        metric::{CudaMetric, HammingScore, LearningRateMetric, LossMetric},
         renderer::{MetricState, MetricsRenderer, TrainingProgress},
-        LearnerBuilder, MultiLabelClassificationOutput, RegressionOutput, TrainOutput, TrainStep,
-        ValidStep,
+        LearnerBuilder, MultiLabelClassificationOutput, TrainOutput, TrainStep, ValidStep,
     },
 };
 
 impl<B: Backend> Model<B> {
-    pub fn forward_classification(
-        &self,
-        input_server_seed_hash_next_roll: Tensor<B, 3>,
-        targets: Tensor<B, 2, Int>,
-    ) -> RegressionOutput<B> {
-        let output = self.forward(input_server_seed_hash_next_roll);
-        let loss = HuberLossConfig::new(0.5).init().forward(
-            output.clone(),
-            targets.clone().float(),
-            Reduction::Sum,
-        );
+    pub fn forward_classification(&self, item: BetBatch<B>) -> MultiLabelClassificationOutput<B> {
+        let class_indices = item.targets.clone().argmax(1).flatten::<1>(0, 1);
+        let output = self.forward(item.clone());
+        let loss = CrossEntropyLossConfig::new()
+            .init(&output.device())
+            .forward(output.clone(), class_indices.clone());
 
-        RegressionOutput::new(loss, output, targets.float())
+        MultiLabelClassificationOutput::new(loss, output, item.targets)
     }
 }
 
-impl<B: AutodiffBackend> TrainStep<BetBatch<B>, RegressionOutput<B>> for Model<B> {
-    fn step(&self, batch: BetBatch<B>) -> TrainOutput<RegressionOutput<B>> {
-        let item = self.forward_classification(batch.input_server_seed_hash_data, batch.targets);
+impl<B: AutodiffBackend> TrainStep<BetBatch<B>, MultiLabelClassificationOutput<B>> for Model<B> {
+    fn step(&self, batch: BetBatch<B>) -> TrainOutput<MultiLabelClassificationOutput<B>> {
+        let item = self.forward_classification(batch);
 
         TrainOutput::new(self, item.loss.backward(), item)
     }
 }
 
-impl<B: Backend> ValidStep<BetBatch<B>, RegressionOutput<B>> for Model<B> {
-    fn step(&self, batch: BetBatch<B>) -> RegressionOutput<B> {
-        self.forward_classification(batch.input_server_seed_hash_data, batch.targets)
+impl<B: Backend> ValidStep<BetBatch<B>, MultiLabelClassificationOutput<B>> for Model<B> {
+    fn step(&self, batch: BetBatch<B>) -> MultiLabelClassificationOutput<B> {
+        self.forward_classification(batch)
     }
 }
 
 #[derive(Config)]
 pub struct TrainingConfig {
-    pub model: ModelConfig,
     pub optimizer: AdamConfig,
-    #[config(default = 2500)]
+    #[config(default = 512)]
+    pub max_seq_len: usize,
+    #[config(default = 10000000)]
     pub num_epochs: usize,
-    #[config(default = 1000)]
+    #[config(default = 100)]
     pub batch_size: usize,
     #[config(default = 1)]
     pub num_workers: usize,
     #[config(default = 42)]
     pub seed: u64,
-    #[config(default = 1e-8)]
-    pub learning_rate: f64,
 }
 
 #[allow(dead_code)]
@@ -96,6 +86,8 @@ pub fn train<B: AutodiffBackend>(artifact_dir: &str, config: TrainingConfig, dev
         .expect("Config should be saved successfully");
     B::seed(config.seed);
 
+    let model = ModelConfig::new().init::<B>(&device);
+
     let batcher_train = BetBatcher::<B>::new(device.clone());
     let batcher_valid = BetBatcher::<B::InnerBackend>::new(device.clone());
 
@@ -109,20 +101,26 @@ pub fn train<B: AutodiffBackend>(artifact_dir: &str, config: TrainingConfig, dev
         .num_workers(config.num_workers)
         .build(BetResultsDataset::test().unwrap());
 
+    let accum = 6;
+    let optim = config.optimizer.init();
+    let lr_scheduler = NoamLrSchedulerConfig::new(0.01 / accum as f64)
+        .with_warmup_steps(6000)
+        .init()
+        .expect("Failed to create learning rate scheduler");
+
     let learner = LearnerBuilder::new(artifact_dir)
-        .metric_train_numeric(LossMetric::new())
-        .metric_valid_numeric(LossMetric::new())
+        .metric_train(CudaMetric::new())
+        .metric_valid(CudaMetric::new())
+        .metric_train(LossMetric::new())
+        .metric_valid(LossMetric::new())
+        .metric_train_numeric(LearningRateMetric::new())
+        .metric_train_numeric(HammingScore::new())
         .with_file_checkpointer(CompactRecorder::new())
-        .devices(vec![device.clone()])
+        .grads_accumulation(accum)
         .num_epochs(config.num_epochs)
-        // .checkpoint(1085)
         // .renderer(NoRenderer {})
         .summary()
-        .build(
-            config.model.init::<B>(&device),
-            config.optimizer.init(),
-            config.learning_rate,
-        );
+        .build(model, optim, lr_scheduler);
 
     let model_trained = learner.fit(dataloader_train, dataloader_test);
 
@@ -130,4 +128,3 @@ pub fn train<B: AutodiffBackend>(artifact_dir: &str, config: TrainingConfig, dev
         .save_file(format!("{artifact_dir}/model"), &CompactRecorder::new())
         .expect("Trained model should be saved successfully");
 }
-

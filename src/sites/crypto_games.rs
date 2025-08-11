@@ -150,7 +150,6 @@ pub struct CryptoGames {
     key: String,
     history: Vec<BetResult>,
     history_size: usize,
-    use_site_balance: bool,
     currency: Currency,
 }
 
@@ -178,7 +177,6 @@ impl Default for CryptoGames {
             key: "".to_string(),
             history: Vec::new(),
             history_size: 10,
-            use_site_balance: true,
             currency,
         }
     }
@@ -198,10 +196,9 @@ impl Site for CryptoGames {
             .await?
             .json()
             .await?;
-        if self.use_site_balance {
-            self.user_stats.balance = balance.balance as f32;
-            self.strategy.set_balance(self.user_stats.balance);
-        }
+
+        self.user_stats.balance = balance.balance as f32;
+        self.strategy.set_balance(self.user_stats.balance);
 
         Ok(())
     }

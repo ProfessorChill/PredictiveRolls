@@ -151,7 +151,7 @@ impl Default for FreeBitcoIn {
     fn default() -> Self {
         Self {
             rolls: 0,
-            client_seed: "lYypIPVEgzvCflWF".to_string(),
+            client_seed: "BeO2jZRd4nidPz4U40e2G7hT22s9GA".to_string(),
             current_bet: 2e-8,
             multiplier: 2.,
             user_stats: UserStats::default(),
@@ -159,11 +159,11 @@ impl Default for FreeBitcoIn {
             prediction: 0,
             strategy: Box::new(
                 // crate::strategies::blaks_runner::BlaksRunner5_0::default()
-                // crate::strategies::none::NoStrat::default()
-                crate::strategies::my_strategy::MyStrat::default()
-                    .with_balance(274e-8)
-                    .with_min_bet(2e-8)
-                    .with_initial_bet(2e-8),
+                crate::strategies::none::NoStrat::default()
+                    // crate::strategies::my_strategy::MyStrat::default()
+                    .with_balance(0.02)
+                    .with_min_bet(0.000008)
+                    .with_initial_bet(0.000008),
             ),
             client: reqwest::Client::new(),
             cookie_jar: Arc::new(Jar::default()),

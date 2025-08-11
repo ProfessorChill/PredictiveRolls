@@ -1,5 +1,7 @@
 #![recursion_limit = "256"]
 
+pub mod config;
+pub mod currency;
 pub mod data;
 pub mod dataset;
 pub mod inference;
@@ -10,18 +12,28 @@ pub mod training;
 pub mod util;
 
 use burn::{
-    backend::wgpu::{Wgpu, WgpuDevice},
+    backend::{
+        wgpu::{Wgpu, WgpuDevice},
+        Vulkan,
+    },
     prelude::*,
     record::{CompactRecorder, FullPrecisionSettings, NamedMpkFileRecorder, Recorder},
+    tensor::activation::{sigmoid, softmax},
 };
 use colored::Colorize;
 use model::Model;
+use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use training::TrainingConfig;
 
 #[allow(unused_imports)]
 use crate::sites::{crypto_games::CryptoGames, duck_dice::DuckDiceIo, free_bitco_in::FreeBitcoIn};
-use crate::sites::{BetError, BetResult, Site};
+use crate::sites::{BetError, BetResult, Site, SiteCurrency};
+use crate::{config::SiteConfig, currency::Currency};
+use crate::{
+    config::{CryptoGamesConfig, DuckDiceConfig, FreeBitcoInConfig, TomlConfig, TomlStrategies},
+    model::ModelConfig,
+};
 
 struct Game<B: Backend> {
     confidence: f32,
@@ -29,10 +41,15 @@ struct Game<B: Backend> {
     model: Model<B>,
     device: B::Device,
     prediction: f32,
+    initialized: bool,
 }
 
 impl<B: Backend> Game<B> {
     async fn bet(&mut self) -> Result<(), BetError> {
+        if !self.initialized {
+            B::seed(42);
+            self.initialized = true;
+        }
         let bet_result = match self.site.do_bet(self.prediction, self.confidence).await {
             Ok(res) => res,
             Err(err) => match err {
@@ -61,11 +78,13 @@ impl<B: Backend> Game<B> {
                         .chars()
                         .flat_map(|chr| {
                             let value = chr.to_digit(16).unwrap_or(0);
-                            (0..4).rev().map(move |i| (((value >> i) & 1) as u8) as f32)
+                            (0..4)
+                                .rev()
+                                .map(move |i| ((value >> i) & 1).elem::<B::FloatElem>())
                         })
-                        .collect::<Vec<f32>>();
+                        .collect::<Vec<B::FloatElem>>();
 
-                    vals.resize(512, 0.);
+                    vals.resize(256, 0f32.elem::<B::FloatElem>());
 
                     vals.append(
                         &mut itm
@@ -73,12 +92,14 @@ impl<B: Backend> Game<B> {
                             .chars()
                             .flat_map(|chr| {
                                 let value = chr.to_digit(16).unwrap_or(0);
-                                (0..4).rev().map(move |i| (((value >> i) & 1) as u8) as f32)
+                                (0..4)
+                                    .rev()
+                                    .map(move |i| ((value >> i) & 1).elem::<B::FloatElem>())
                             })
-                            .collect::<Vec<f32>>(),
+                            .collect::<Vec<B::FloatElem>>(),
                     );
 
-                    vals.resize(1024, 0.);
+                    vals.resize(512, 0f32.elem::<B::FloatElem>());
 
                     vals.append(
                         &mut itm
@@ -86,32 +107,38 @@ impl<B: Backend> Game<B> {
                             .chars()
                             .flat_map(|chr| {
                                 let value = chr.to_digit(16).unwrap_or(0);
-                                (0..8).rev().map(move |i| (((value >> i) & 1) as u8) as f32)
+                                (0..4)
+                                    .rev()
+                                    .map(move |i| ((value >> i) & 1).elem::<B::FloatElem>())
                             })
-                            .collect::<Vec<f32>>(),
+                            .collect::<Vec<B::FloatElem>>(),
                     );
 
-                    vals.resize(1536, 0.);
+                    vals.resize(768, 0f32.elem::<B::FloatElem>());
 
                     vals.append(
-                        &mut (0..512)
-                            .map(|i| (((itm.nonce >> i) & 1) as u8) as f32)
-                            .collect::<Vec<f32>>(),
+                        &mut (0..32)
+                            .map(|i| ((itm.nonce >> i) & 1).elem::<B::FloatElem>())
+                            .collect::<Vec<B::FloatElem>>(),
                     );
 
-                    vals.resize(2048, 0.);
+                    vals.resize(1024, 0f32.elem::<B::FloatElem>());
 
                     vals
                 })
-                .collect::<Vec<f32>>();
+                .collect::<Vec<B::FloatElem>>();
 
             let hash_data = TensorData::new(
                 inputs_hash,
-                [history.len() / history_size, history_size, 2048],
+                [history.len() / history_size, history_size, 4, 256],
             );
-            let hash_data: Tensor<B, 3> = Tensor::from(hash_data).to_device(&self.device);
+            let hash_data: Tensor<B, 4> =
+                Tensor::from(hash_data.convert::<B::FloatElem>()).to_device(&self.device);
 
-            let output = self.model.forward(hash_data);
+            let output = self.model.forward(data::BetBatch {
+                inputs: hash_data,
+                targets: Tensor::zeros(Shape::new([1, 1]), &self.device),
+            });
             let predicted_output = output
                 .clone()
                 .argmax(1)
@@ -126,7 +153,7 @@ impl<B: Backend> Game<B> {
             // let predicted = (((predicted - 4500.) / (5500. - 4500.)) * (10000. - 0.)) + 0.;
 
             self.confidence = confidence;
-            self.prediction = predicted_output as f32;
+            self.prediction = predicted_output as f32 * 100.;
         }
 
         Ok(())
@@ -169,23 +196,34 @@ impl<B: Backend> Game<B> {
 
 #[tokio::main]
 async fn main() -> Result<(), BetError> {
-    type MyBackend = Wgpu<f32, i32>;
+    let config_contents = tokio::fs::read_to_string("config.toml")
+        .await
+        .expect("config.toml not found.");
+    let game_config: TomlConfig =
+        toml::from_str(&config_contents).expect("Unable to read config.toml");
+
+    let site = if game_config.duck_dice.enabled {
+        DuckDiceIo::default()
+            .with_api_key(game_config.duck_dice.api_key.clone())
+            .with_currency(game_config.duck_dice.currency.clone())
+            .with_strategy(game_config.duck_dice.strategy)
+    } else {
+        unimplemented!("TODO: Add more sites");
+    };
+
+    type MyBackend = Vulkan<f32, i32>;
 
     let device = WgpuDevice::default();
-    let artifact_dir = "/home/jvne/Projects/rust/random_guesser/guide";
+    let artifact_dir = "/home/jvne/Projects/rust/random_guesser/experimental";
 
     let config = TrainingConfig::load(format!("{artifact_dir}/config.json"))
         .expect("Config should exist for the model; run train first.");
-    /*
-    let record = NamedMpkFileRecorder::<FullPrecisionSettings>::default()
-        .load(format!("{artifact_dir}/model").into(), &device)
-        .expect("Trained model should exist; run train first.");
-    */
+
     let record = CompactRecorder::new()
         .load(format!("{artifact_dir}/model").into(), &device)
         .expect("Trained model should exist; run train first.");
 
-    let model: Model<MyBackend> = config.model.init(&device).load_record(record);
+    let model = ModelConfig::new().init(&device).load_record(record);
 
     let mut game = Game::<MyBackend> {
         confidence: 0.,
@@ -193,6 +231,7 @@ async fn main() -> Result<(), BetError> {
         model,
         device,
         prediction: 0.,
+        initialized: false,
     };
     game.site.login().await?;
 

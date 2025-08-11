@@ -1,53 +1,73 @@
-use burn::{
-    nn::{
-        conv::{
-            Conv1d, Conv1dConfig, Conv2d, Conv2dConfig, ConvTranspose2d, ConvTranspose2dConfig,
-        },
-        transformer::{PositionWiseFeedForward, PositionWiseFeedForwardConfig},
-        Dropout, DropoutConfig, Gelu, Linear, LinearConfig, Lstm, LstmConfig, PaddingConfig1d,
-        Relu,
-    },
-    prelude::*,
-    tensor::activation::{sigmoid, softmax},
-};
+use burn::{prelude::*, tensor::Distribution};
+
+use crate::data::BetBatch;
 
 #[derive(Module, Debug)]
 pub struct Model<B: Backend> {
-    input_layer: Conv1d<B>,
-    hidden_layer: Conv1d<B>,
-    dropout_layer: Dropout,
-    hidden_layer_2: Linear<B>,
-    output_layer: PositionWiseFeedForward<B>,
+    input_layer: nn::conv::Conv2d<B>,
+    positional_encoding: nn::PositionalEncoding<B>,
+    transformer_encoder: nn::transformer::TransformerEncoder<B>,
+    lstm1: nn::Lstm<B>,
+    lstm2: nn::Lstm<B>,
+    transformer_decoder: nn::transformer::TransformerDecoder<B>,
+    output_layer: nn::Linear<B>,
 }
 
-#[derive(Config, Debug)]
+#[derive(Config)]
 pub struct ModelConfig {}
 
 impl ModelConfig {
     pub fn init<B: Backend>(&self, device: &B::Device) -> Model<B> {
+        let input_layer = nn::conv::Conv2dConfig::new([10, 10], [4, 1]).init(device);
+        let positional_encoding = nn::PositionalEncodingConfig::new(256).init(device);
+        let transformer_encoder =
+            nn::transformer::TransformerEncoderConfig::new(256, 1024, 8, 4).init(device);
+        let lstm1 = nn::LstmConfig::new(transformer_encoder.d_model, 512, true).init(device);
+        let lstm2 = nn::LstmConfig::new(lstm1.d_hidden, 256, true).init(device);
+        let transformer_decoder =
+            nn::transformer::TransformerDecoderConfig::new(256, 1024, 8, 4).init(device);
+        let output_layer = nn::LinearConfig::new(256, 10).init(device);
+
         Model {
-            input_layer: Conv1dConfig::new(10, 64, 3)
-                .with_padding(PaddingConfig1d::Same)
-                .init(device),
-            hidden_layer: Conv1dConfig::new(64, 3, 15)
-                .with_padding(PaddingConfig1d::Same)
-                .init(device),
-            dropout_layer: DropoutConfig::new(0.3).init(),
-            hidden_layer_2: LinearConfig::new(6144, 10001).init(device),
-            output_layer: PositionWiseFeedForwardConfig::new(10001, 5000).init(device),
+            input_layer,
+            positional_encoding,
+            transformer_encoder,
+            lstm1,
+            lstm2,
+            transformer_decoder,
+            output_layer,
         }
     }
 }
 
 impl<B: Backend> Model<B> {
-    pub fn forward(&self, input_server_seed_hash_next_roll: Tensor<B, 3>) -> Tensor<B, 2> {
-        let x = self.input_layer.forward(input_server_seed_hash_next_roll);
-        let x = self.hidden_layer.forward(x);
-        let x = self.dropout_layer.forward(x);
-        let x = self.hidden_layer_2.forward(x.flatten::<2>(1, 2));
-        let x = self.output_layer.forward(x);
+    pub fn forward(&self, item: BetBatch<B>) -> Tensor<B, 2> {
+        let device = &self.devices()[0];
 
-        x
+        let inputs = item.inputs.to_device(device);
+
+        let inputs = self.input_layer.forward(inputs);
+        let inputs = inputs.flatten(2, 3);
+
+        let pos_encode = self.positional_encoding.forward(inputs.clone());
+        let combined = (inputs.clone() + pos_encode) / 2;
+        let te_input = nn::transformer::TransformerEncoderInput::new(combined);
+        let encoded = self.transformer_encoder.forward(te_input);
+
+        let lstm = self.lstm1.forward(encoded.clone(), None);
+        let lstm = self.lstm2.forward(lstm.0, None);
+
+        let te_decode = nn::transformer::TransformerDecoderInput::new(
+            Tensor::random(
+                Shape::new(encoded.clone().dims()),
+                Distribution::Normal(-1., 1.),
+                device,
+            ),
+            lstm.0.clone(),
+        );
+        let decoded = self.transformer_decoder.forward(te_decode);
+        let combined = (lstm.0 + decoded) / 2;
+
+        self.output_layer.forward(combined).flatten(1, 2)
     }
 }
-

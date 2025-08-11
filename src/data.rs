@@ -1,5 +1,4 @@
 use burn::{data::dataloader::batcher::Batcher, prelude::*};
-use sha2::{Digest, Sha256};
 
 use crate::dataset::BetResultCsvRecord;
 
@@ -16,7 +15,7 @@ impl<B: Backend> BetBatcher<B> {
 
 #[derive(Clone, Debug)]
 pub struct BetBatch<B: Backend> {
-    pub input_server_seed_hash_data: Tensor<B, 3>,
+    pub inputs: Tensor<B, 4>,
     pub targets: Tensor<B, 2, Int>,
 }
 
@@ -33,11 +32,13 @@ impl<B: Backend> Batcher<B, BetResultCsvRecord, BetBatch<B>> for BetBatcher<B> {
                     .chars()
                     .flat_map(|chr| {
                         let value = chr.to_digit(16).unwrap_or(0);
-                        (0..4).rev().map(move |i| (((value >> i) & 1) as u8) as f32)
+                        (0..4)
+                            .rev()
+                            .map(move |i| ((value >> i) & 1).elem::<B::FloatElem>())
                     })
-                    .collect::<Vec<f32>>();
+                    .collect::<Vec<B::FloatElem>>();
 
-                vals.resize(512, 0.);
+                vals.resize(256, 0f32.elem::<B::FloatElem>());
 
                 vals.append(
                     &mut itm
@@ -45,12 +46,14 @@ impl<B: Backend> Batcher<B, BetResultCsvRecord, BetBatch<B>> for BetBatcher<B> {
                         .chars()
                         .flat_map(|chr| {
                             let value = chr.to_digit(16).unwrap_or(0);
-                            (0..4).rev().map(move |i| (((value >> i) & 1) as u8) as f32)
+                            (0..4)
+                                .rev()
+                                .map(move |i| ((value >> i) & 1).elem::<B::FloatElem>())
                         })
-                        .collect::<Vec<f32>>(),
+                        .collect::<Vec<B::FloatElem>>(),
                 );
 
-                vals.resize(1024, 0.);
+                vals.resize(512, 0f32.elem::<B::FloatElem>());
 
                 vals.append(
                     &mut itm
@@ -58,50 +61,53 @@ impl<B: Backend> Batcher<B, BetResultCsvRecord, BetBatch<B>> for BetBatcher<B> {
                         .chars()
                         .flat_map(|chr| {
                             let value = chr.to_digit(16).unwrap_or(0);
-                            (0..8).rev().map(move |i| (((value >> i) & 1) as u8) as f32)
+                            (0..4)
+                                .rev()
+                                .map(move |i| ((value >> i) & 1).elem::<B::FloatElem>())
                         })
-                        .collect::<Vec<f32>>(),
+                        .collect::<Vec<B::FloatElem>>(),
                 );
 
-                vals.resize(1536, 0.);
+                vals.resize(768, 0f32.elem::<B::FloatElem>());
 
                 vals.append(
-                    &mut (0..512)
-                        .map(|i| (((itm.nonce >> i) & 1) as u8) as f32)
-                        .collect::<Vec<f32>>(),
+                    &mut (0..32)
+                        .map(|i| ((itm.nonce >> i) & 1).elem::<B::FloatElem>())
+                        .collect::<Vec<B::FloatElem>>(),
                 );
 
-                vals.resize(2048, 0.);
+                vals.resize(1024, 0f32.elem::<B::FloatElem>());
 
                 vals
             })
-            .collect::<Vec<f32>>();
+            .collect::<Vec<B::FloatElem>>();
 
         let hash_data = TensorData::new(
             inputs_hash,
-            [items.len() / history_size, history_size, 2048],
+            [items.len() / history_size, history_size, 4, 256],
         );
-        let hash_data: Tensor<B, 3> = Tensor::from(hash_data).to_device(&self.device);
+        let hash_data: Tensor<B, 4> =
+            Tensor::from(hash_data.convert::<B::FloatElem>()).to_device(&self.device);
 
         let targets = items
             .chunks(history_size)
             .flat_map(|itm| {
-                let mut arr = [0.; 10001];
+                let mut arr = [(-1f32).elem::<B::FloatElem>(); 100];
                 if let Some(itm) = itm.last() {
-                    arr[itm.next_number as usize] = 1.;
+                    arr[itm.next_number as usize / 100] = 1f32.elem::<B::FloatElem>();
                 }
                 arr
             })
-            .collect::<Vec<f32>>();
+            .collect::<Vec<B::FloatElem>>();
 
-        let target_data = TensorData::new(targets, [items.len() / history_size, 10001]);
-        let target_data: Tensor<B, 2> = Tensor::from(target_data).to_device(&self.device);
+        let target_data = TensorData::new(targets, [items.len() / history_size, 100]);
+        let target_data: Tensor<B, 2> =
+            Tensor::from(target_data.convert::<B::FloatElem>()).to_device(device);
         let target_data = target_data.int();
 
         BetBatch {
-            input_server_seed_hash_data: hash_data,
+            inputs: hash_data,
             targets: target_data,
         }
     }
 }
-

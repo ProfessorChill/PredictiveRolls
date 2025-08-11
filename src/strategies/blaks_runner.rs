@@ -53,9 +53,9 @@ impl BlaksRunner5_0 {
         if win {
             let rolled_number = last_rolled / 100;
             let target = if rolled_number >= 50 {
-                100 - last_rolled
+                100 - rolled_number
             } else {
-                last_rolled
+                rolled_number
             };
 
             self.high_low_average[self.average_count] = target as f32;
@@ -112,7 +112,7 @@ impl BlaksRunner5_0 {
 
     fn reset(&mut self) {
         let inc_divisor = 10000000.;
-        self.base_chance = 1.;
+        self.base_chance = 4.4;
         self.chance_inc = 0.00010;
         self.inc_divisor = inc_divisor;
         self.site_max_profit = 0.;
@@ -140,8 +140,9 @@ impl BlaksRunner5_0 {
         self.roll_count = 0;
         self.roll_seed_count = 0;
         self.chance = 1.;
-        self.next_bet = 1e-8;
+        self.next_bet = self.min_bet;
         self.temp_win_mult = 1.;
+        self.base_bet = self.min_bet;
     }
 }
 
@@ -204,7 +205,6 @@ impl Strategy for BlaksRunner5_0 {
     fn with_balance(mut self, balance: f32) -> Self {
         self.start_balance = balance;
         self.bankroll = balance;
-        self.win_target = balance;
         self.profit = 0.;
 
         self
@@ -219,7 +219,6 @@ impl Strategy for BlaksRunner5_0 {
     fn set_balance(&mut self, balance: f32) {
         self.bankroll = balance;
         self.start_balance = balance;
-        self.win_target = balance;
         self.profit = 0.;
     }
 
@@ -230,14 +229,16 @@ impl Strategy for BlaksRunner5_0 {
             self.initialized = true;
         }
 
-        self.chance = (50. + self.house_percent) * (1. - ((prediction - 5000.).abs() / 5000.));
-        self.chance = self.chance.max(self.min_chance).min(self.max_chance);
+        // self.chance = (50. + self.house_percent) * (1. - ((prediction - 5000.).abs() / 5000.));
+        // self.chance = self.chance.max(self.min_chance).min(self.max_chance);
+        println!("{}", self.next_bet);
         self.auto_tune();
+        println!("{}", self.next_bet);
 
         let mut multiplier = 1. / (self.chance / 100.);
         multiplier = multiplier.clamp(1.01, 4750.);
 
-        self.next_bet = self.next_bet.max(1e-8);
+        self.next_bet = self.next_bet.max(self.min_bet);
 
         (self.next_bet, multiplier, self.chance, self.bet_high)
     }
@@ -264,7 +265,7 @@ impl Strategy for BlaksRunner5_0 {
             self.win_mult = self.max_win_mult as f32;
         }
         self.temp_win_mult = self.win_mult;
-        // self.next_bet = self.base_bet;
+        self.next_bet = self.base_bet;
         self.calc_chance(true, bet_result.number);
         self.auto_tune();
     }
@@ -273,8 +274,9 @@ impl Strategy for BlaksRunner5_0 {
         self.loss_count += 1;
         self.high_low_loss_count += 1;
         self.spent += bet_result.win_amount;
-        self.bankroll -= bet_result.win_amount;
-        self.profit -= bet_result.win_amount;
+        self.bankroll += bet_result.win_amount;
+        self.profit += bet_result.win_amount;
+        self.profit = self.profit.max(0.);
 
         let win_temp = (100. - (100. * (self.house_percent / 100.))) / self.chance;
         if self.high_low_loss_count as f32 >= win_temp {
